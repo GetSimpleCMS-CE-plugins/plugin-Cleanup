@@ -2,7 +2,7 @@
 /*
 Plugin Name: Plugin Cleanup (Secure Edition)
 Description: Find and safely delete inactive plugins with all their files and detected data — including orphaned files from previously removed plugins.
-Version: 2.0 (Security Hardened)
+Version: 2.1 (Security Hardened)
 Author: Fahad4x4 (Security Enhanced)
 Author URI: https://getsimple-ce.ovh/
 License: MIT
@@ -31,7 +31,7 @@ $thisfile = basename(__FILE__, ".php");
 // ============================================================================
 define('CLEANUP_LOG_FILE', GSDATAOTHERPATH . 'cleanup_audit.log');
 define('CLEANUP_MAX_FILE_SIZE', 10485760); // 10MB limit for single file operations
-define('CLEANUP_VERSION', '2.0');
+define('CLEANUP_VERSION', '2.1');
 
 // ============================================================================
 // TRANSLATIONS
@@ -157,7 +157,7 @@ register_plugin(
     'Fahad4x4',
     'https://getsimple-ce.ovh/',
     $t['PLUGIN_DESC'],
-    'plugins-cleanup',
+    'plugins',              // show under Plugins tab
     'cleanup_plugins_show'
 );
 
@@ -210,15 +210,15 @@ function cleanup_verify_token($token) {
 }
 
 /**
- * Check if user has admin permissions (no core modifications)
+ * Check if user has admin permissions (no need to modify core)
  */
 function cleanup_check_permissions() {
-    // Must be running inside GetSimple
+    // Ensure we are inside GetSimple admin context
     if (!defined('IN_GS')) {
         return false;
     }
-    // Basic admin session check (GetSimple admin cookie)
-    if (empty($_COOKIE['GS_ADMIN_USERNAME'])) {
+    // Basic login check: admin cookie
+    if (!isset($_COOKIE['GS_ADMIN_USERNAME']) || $_COOKIE['GS_ADMIN_USERNAME'] === '') {
         return false;
     }
     return true;
@@ -786,6 +786,54 @@ function cleanup_scan_dir($dir, $prefix = '', $max_depth = 10, $current_depth = 
 // ============================================================================
 // DATA DETECTION FUNCTIONS
 // ============================================================================
+
+/**
+ * Build an in-memory index of all plugin PHP sources (first 100KB each)
+ * Used to avoid false positives in orphaned data detection.
+ */
+function cleanup_get_plugin_sources() {
+    static $sources = null;
+
+    if ($sources !== null) {
+        return $sources;
+    }
+
+    $sources     = array();
+    $plugins_dir = GSPLUGINPATH;
+
+    if (!is_dir($plugins_dir)) {
+        return $sources;
+    }
+
+    $entries = scandir($plugins_dir);
+    if ($entries === false) {
+        return $sources;
+    }
+
+    foreach ($entries as $file) {
+        if (substr($file, -4) !== '.php') {
+            continue;
+        }
+
+        $plugin_id = substr($file, 0, -4);
+        $path      = $plugins_dir . $file;
+
+        $h = @fopen($path, 'r');
+        if ($h === false) {
+            continue;
+        }
+
+        $code = fread($h, 102400); // 100KB max per plugin
+        fclose($h);
+
+        if ($code !== false) {
+            $sources[$plugin_id] = $code;
+        }
+    }
+
+    return $sources;
+}
+
 /**
  * Analyze plugin code for data patterns (improved)
  */
@@ -811,9 +859,9 @@ function cleanup_analyze_plugin_code($plugin_id) {
 
     $methods  = array();
     $patterns = array(
-        '/file_(put|get)_contents/i'                 => 'file_put_contents',
-        '/fopen\s*\(\s*[\'"]([^\'"]+)[\'"]/i'        => 'fopen/fwrite',
-        '/json_(encode|decode)/i'                    => 'JSON',
+        '/file_(put|get)_contents/i'        => 'file_put_contents',
+        '/fopen\s*\(\s*[\'"]([^\'"]+)[\'"]/i' => 'fopen/fwrite',
+        '/json_(encode|decode)/i'           => 'JSON',
         '/(simplexml_load_file|SimpleXMLElement|XML)/i' => 'XML',
         '/(sqlite|PDO|mysqli|mysql_|wpdb|db|database)/i' => 'Database'
     );
@@ -940,7 +988,8 @@ function cleanup_find_data_files_by_code($plugin_id, $code) {
 }
 
 /**
- * Find orphaned data files (improved security)
+ * Find orphaned data files (improved security + avoid false positives)
+ * - Skips files whose names are explicitly referenced in ANY plugin PHP code.
  */
 function cleanup_get_orphaned_data_files($known_plugin_ids) {
     $orphaned = array();
@@ -959,6 +1008,9 @@ function cleanup_get_orphaned_data_files($known_plugin_ids) {
 
     $known_ids_lower = array_map('strtolower', $known_plugin_ids);
     $data_extensions = array('txt', 'json', 'xml', 'db', 'dat', 'csv', 'log', 'yaml', 'yml');
+
+    // Load all plugin PHP sources once (first 100KB each)
+    $plugin_sources = cleanup_get_plugin_sources();
 
     foreach ($files as $file) {
         if ($file === '.' || $file === '..') {
@@ -995,7 +1047,21 @@ function cleanup_get_orphaned_data_files($known_plugin_ids) {
             continue;
         }
 
-        // Check if belongs to any known plugin
+        // --- KEY PART: If the filename is referenced in ANY plugin code, skip it ---
+        $referenced_in_code = false;
+        foreach ($plugin_sources as $code) {
+            if (stripos($code, $file) !== false) { // e.g. "headless_api_config.json" or "blog.db"
+                $referenced_in_code = true;
+                break;
+            }
+        }
+        if ($referenced_in_code) {
+            // File is explicitly used by some plugin → not orphaned
+            continue;
+        }
+        // ---------------------------------------------------------------------------
+
+        // Check if belongs to any known plugin by ID pattern in filename
         $belongs_to_known = false;
         foreach ($known_ids_lower as $id) {
             if ($id !== '') {
@@ -1007,7 +1073,7 @@ function cleanup_get_orphaned_data_files($known_plugin_ids) {
             }
         }
 
-        // If no match → potentially orphaned
+        // If no match by plugin ID and not referenced in code → orphan
         if (!$belongs_to_known) {
             $orphaned[] = array(
                 'path' => $full_path,
