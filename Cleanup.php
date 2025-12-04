@@ -157,11 +157,11 @@ register_plugin(
     'Fahad4x4',
     'https://getsimple-ce.ovh/',
     $t['PLUGIN_DESC'],
-    'pages',
+    'plugins-cleanup',
     'cleanup_plugins_show'
 );
 
-add_action('pages-sidebar', 'createSideMenu', array($thisfile, $t['MENU_TITLE']));
+add_action('plugins-sidebar', 'createSideMenu', array($thisfile, $t['MENU_TITLE']));
 
 // ============================================================================
 // SECURITY FUNCTIONS
@@ -210,15 +210,15 @@ function cleanup_verify_token($token) {
 }
 
 /**
- * Check if user has admin permissions
+ * Check if user has admin permissions (no core modifications)
  */
 function cleanup_check_permissions() {
-    // GetSimple specific permission check
-    if (!defined('GSADMIN')) {
+    // Must be running inside GetSimple
+    if (!defined('IN_GS')) {
         return false;
     }
-    // Additional check: verify user is logged in
-    if (!isset($_COOKIE['GS_ADMIN_USERNAME']) || $_COOKIE['GS_ADMIN_USERNAME'] === '') {
+    // Basic admin session check (GetSimple admin cookie)
+    if (empty($_COOKIE['GS_ADMIN_USERNAME'])) {
         return false;
     }
     return true;
@@ -360,8 +360,8 @@ function cleanup_plugins_show() {
         return;
     }
 
-    $all_plugins    = cleanup_get_all_plugins();
-    $active_plugins = cleanup_get_active_plugins();
+    $all_plugins      = cleanup_get_all_plugins();
+    $active_plugins   = cleanup_get_active_plugins();
     $inactive_plugins = array_diff_key($all_plugins, $active_plugins);
     $all_known_ids    = array_keys($all_plugins);
     $orphaned_files   = cleanup_get_orphaned_data_files($all_known_ids);
@@ -706,9 +706,9 @@ function cleanup_get_plugin_details($plugin_id) {
 
     // Main file
     if (file_exists($main_file_path)) {
-        $sz                      = filesize($main_file_path);
+        $sz                        = filesize($main_file_path);
         $details['main_file_size'] = cleanup_format_size($sz);
-        $total_size             += $sz;
+        $total_size               += $sz;
         $total_files++;
     }
 
@@ -811,9 +811,9 @@ function cleanup_analyze_plugin_code($plugin_id) {
 
     $methods  = array();
     $patterns = array(
-        '/file_(put|get)_contents/i'        => 'file_put_contents',
-        '/fopen\s*\(\s*[\'"]([^\'"]+)[\'"]/i' => 'fopen/fwrite',
-        '/json_(encode|decode)/i'           => 'JSON',
+        '/file_(put|get)_contents/i'                 => 'file_put_contents',
+        '/fopen\s*\(\s*[\'"]([^\'"]+)[\'"]/i'        => 'fopen/fwrite',
+        '/json_(encode|decode)/i'                    => 'JSON',
         '/(simplexml_load_file|SimpleXMLElement|XML)/i' => 'XML',
         '/(sqlite|PDO|mysqli|mysql_|wpdb|db|database)/i' => 'Database'
     );
